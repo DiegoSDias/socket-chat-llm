@@ -1,0 +1,20 @@
+# Ambiente virtual
+.venv/
+
+# Arquivos Python
+__pycache__/
+*.pyc
+
+# Variáveis de ambiente
+.env
+
+# Logs
+logs/
+*.log
+
+# Chaves privadas
+*.key
+*.pem
+
+# Testes
+.pytest_cache/
