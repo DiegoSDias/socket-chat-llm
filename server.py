@@ -1,4 +1,5 @@
 import socket
+import threading
 
 from config import HOST, PORT, ENCODING
 from protocol import create_message, send_json, receive_json
@@ -6,7 +7,9 @@ from protocol import create_message, send_json, receive_json
 def handle_client(connection, address):
     try:
         with connection:
-            print(f'Cliente conectado: {address}')
+            thread_name = threading.current_thread().name
+            
+            print(f'Cliente conectado: {address} - ({thread_name})')
             
             with connection.makefile('r', encoding=ENCODING) as reader:
                 identification = receive_json(reader)
@@ -74,7 +77,10 @@ def handle_client(connection, address):
                     
         
     except (OSError, ValueError, KeyError, AttributeError) as error:
-        print(f'Erro de comunicação: {error}')
+        print(f'Erro de comunicação com {address}: {error}')
+        
+    finally:
+        print(f'Conexão com {address} finalizada!')
         
 def start_server():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
@@ -89,7 +95,14 @@ def start_server():
             
             connection, address = server.accept()
             
-            handle_client(connection, address)
+            client_thread = threading.Thread(
+                target = handle_client,
+                args = (connection, address),
+                name = f'client-{address[1]}',
+                daemon = True
+            )
+
+            client_thread.start()
             
 if __name__ == '__main__':
     try:
