@@ -1,4 +1,5 @@
 import socket
+import threading
 
 from config import HOST, PORT, ENCODING
 from protocol import create_message, send_json, receive_json
@@ -52,84 +53,98 @@ def identify_client(connection, reader):
     return username
 
 
-def message_loop(connection, reader, username):
-    while True:
-        content = input("Informe sua mensagem: ").strip()
+def receive_messages(reader, stop_event):
+    try:
+        while not stop_event.is_set():
+            message = receive_json(reader)
+            
+            if message is None:
+                if not stop_event.is_set():
+                    print('Servidor disconectou.')
+                break
+            
+            if not isinstance(message, dict):
+                print('Mensagem recebida inválida.')
+                continue
+            
+            message_type = message.get('message_type')
+            content = message.get('content', '')
+            
+            if message_type == 'response':
+                print(f'\nResposta: {content}')
+                
+            elif message_type == 'users':
+                
+                if not isinstance(content, list):
+                    raise ValueError('Lista de usuários inválida.')
+                        
+                print('\nUsuários online: ')
+                        
+                for user in content:
+                    if not isinstance(user, dict):
+                        raise ValueError('Dados do usuário inválido.')
+                            
+                    display_name = user.get('display_name')
+                    user_name = user.get('username')
+                            
+                    if not isinstance(display_name, str) or not isinstance(user_name, str):
+                        raise ValueError('Informações do usuário inválidas.')
+                                
+                    print(f' - {display_name} @{user_name}')
+                    
+            elif message_type == 'error':
+                print(f'\nErro no servidor: {content}')
+                
+            elif message_type == 'message':
+                sender = message.get('sender', 'unknown')
+                print(f'\n{sender}: {content}')
+                
+            else:
+                print(f'Tipo de mensagem não suportada: {message_type}')
+    
+    except(OSError, ValueError, UnicodeError) as error:
+        if not stop_event.is_set():
+            print(f'Erro no recebimento: {error}')
+            
+    finally:
+        stop_event.set()
 
+
+def send_message(connection, username, stop_event):
+    while not stop_event.is_set():
+        try:
+            content = input('Informe sua mensagem: ').strip()
+        except EOFError:
+            break
+        
+        if stop_event.is_set():
+            break
+        
         if not content:
-            continue
-
-        if content.lower() == "@exit":
+            break
+        
+        if content.lower() == '@exit':
             disconnection = create_message(
                 message_type="disconnection",
                 sender=username,
                 recipient="server",
                 content="",
             )
-
+            
             send_json(connection, disconnection)
             break
         
         message_type = 'list_users' if content.lower() == '@users' else 'message'
-
+        
         message = create_message(
             message_type=message_type, 
             sender=username, 
             recipient="server", 
             content='' if message_type == 'list_users' else content
         )
-
+        
         send_json(connection, message)
-
-        response = receive_json(reader)
-
-        if response is None:
-            print("Servidor desconectado.")
-            break
-        
-        if not isinstance(response, dict):
-            raise ValueError('Resposta do servidor inválida.')
-
-        if response.get("request_id") != message["request_id"]:
-            raise ValueError("Resposta de identificação inválida.")
-
-        response_type = response.get("message_type")
-        
-        if response_type == 'error':
-            print(f'Erro no servidor: {response.get(content)}')
-            continue
-        
-        if message_type == 'list_users':
-            if response_type != 'users':
-                raise ValueError('Resposta de usuários inválida.')
-
-            users = response.get('content')
-            
-            if not isinstance(users, list):
-                raise ValueError('Lista de usuários inválida.')
-            
-            print('\nUsuários online: ')
-            
-            for user in users:
-                if not isinstance(user, dict):
-                    raise ValueError('Dados do usuário inválido.')
-                
-                display_name = user.get('display_name')
-                user_name = user.get('username')
-                
-                if not isinstance(display_name, str) or not isinstance(user_name, str):
-                    raise ValueError('Informações do usuário inválidas.')
-                
-                print(f' - {display_name} @{user_name}')
-                
-            print()
-        
-        else:
-            if response_type != "response":
-                raise ValueError("Resposta de mensagem inválida.")
-
-            print(f"Resposta: {response['content']}")
-
+    
 
 def start_client():
     try:
@@ -140,7 +155,29 @@ def start_client():
 
             with client.makefile("r", encoding=ENCODING) as reader:
                 username = identify_client(client, reader)
-                message_loop(client, reader, username)
+                
+                stop_event = threading.Event()
+                
+                receiver_thread = threading.Thread(
+                    target = receive_messages,
+                    args = (reader, stop_event),
+                    name = 'message_receiver',
+                    daemon = True
+                )
+                
+                receiver_thread.start()
+                
+                try:
+                    send_message(client, username, stop_event)
+                finally:
+                    stop_event.set()
+                    
+                    try:
+                        client.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    
+                    receiver_thread.join(timeout=2)
 
         print("Cliente parou")
 
