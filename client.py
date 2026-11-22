@@ -23,7 +23,7 @@ def identify_client(connection, reader):
     if response is None:
         raise ConnectionError('Servidor disconectado.')
     
-    if response.get('mmessage_type') != 'confirmation':
+    if response.get('message_type') != 'confirmation':
         raise ValueError('Resposta de identificação inválida.')
     
     if response.get('request_id') != identification['request_id']:
@@ -39,8 +39,8 @@ def message_loop(connection, reader, username):
         
         if not content:
             continue
-        
-        if content.lower == '/exit':
+
+        if content.lower() == '@exit':
             disconnection = create_message(
                 message_type = 'disconnection',
                 sender = username,

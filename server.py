@@ -11,11 +11,11 @@ def handle_client(connection, address):
             with connection.makefile('r', encoding=ENCODING) as reader:
                 identification = receive_json(reader)
                 
-                if not identification:
+                if identification is None:
                     print('Cliente desconectou antes da identificação.')
                     return
                 
-                if identification.get('type') != 'identification':
+                if identification.get('message_type') != 'identification':
                     print('Identificação inválida.')
                     return
                 
@@ -33,7 +33,7 @@ def handle_client(connection, address):
                     message_type = 'confirmation',
                     sender = 'server',
                     recipient = username,
-                    content = f'Bem vindo {username}!',
+                    content = f'Bem vindo, {username}!',
                     request_id = identification['request_id'],
                 )
                 
@@ -87,7 +87,7 @@ def start_server():
         while True:
             print('Aguardando conexão...')
             
-            connection, address = server.connect()
+            connection, address = server.accept()
             
             handle_client(connection, address)
             

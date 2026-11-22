@@ -22,7 +22,7 @@ def receive_json(reader):
     if not line:
         return None
     
-    if line.endswith('\n'):
+    if not line.endswith('\n'):
         raise ValueError('Mensagem Incompleta.')
     
     data = json.loads(line)
