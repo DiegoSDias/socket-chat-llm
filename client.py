@@ -70,11 +70,21 @@ def receive_messages(reader, stop_event):
             message_type = message.get('message_type')
             content = message.get('content', '')
             
-            if message_type == 'response':
-                print(f'\nResposta: {content}')
+            if message_type == 'message':
+                if not isinstance(content, dict):
+                    print('\nMensagem do chat inválida.')
+                    continue
+                
+                sender = message.get('sender', 'unknown')
+                display_name = content.get('display_name', 'unknown')
+                text = content.get('text', '')
+                scope = content.get('scope', 'public')
+                
+                label = 'Privado' if scope == 'private' else 'Público'
+                
+                print(f'\n[{label}] {display_name} (@{sender}): {text}')
                 
             elif message_type == 'users':
-                
                 if not isinstance(content, list):
                     raise ValueError('Lista de usuários inválida.')
                         
@@ -90,15 +100,14 @@ def receive_messages(reader, stop_event):
                     if not isinstance(display_name, str) or not isinstance(user_name, str):
                         raise ValueError('Informações do usuário inválidas.')
                                 
-                    print(f' - {display_name} @{user_name}')
-                    
+                    print(f' - {display_name} (@{user_name})')
+            
+            elif message_type == 'response':
+                print(f'\nResposta: {content}')
+                
             elif message_type == 'error':
                 print(f'\nErro no servidor: {content}')
-                
-            elif message_type == 'message':
-                sender = message.get('sender', 'unknown')
-                print(f'\n{sender}: {content}')
-                
+                    
             else:
                 print(f'Tipo de mensagem não suportada: {message_type}')
     
@@ -111,6 +120,8 @@ def receive_messages(reader, stop_event):
 
 
 def send_message(connection, username, stop_event):
+    print('Comandos: \n/users - Para listar os usuários \nexit - Para sair \n@username message - Para enviar uma mensagem privada')
+    
     while not stop_event.is_set():
         try:
             content = input('Informe sua mensagem: ').strip()
@@ -123,7 +134,7 @@ def send_message(connection, username, stop_event):
         if not content:
             break
         
-        if content.lower() == '@exit':
+        if content.lower() == '/exit':
             disconnection = create_message(
                 message_type="disconnection",
                 sender=username,
@@ -134,16 +145,44 @@ def send_message(connection, username, stop_event):
             send_json(connection, disconnection)
             break
         
-        message_type = 'list_users' if content.lower() == '@users' else 'message'
+        if content.lower() == '/users':
+            message = create_message(
+                message_type='list_users', 
+                sender=username, 
+                recipient="server", 
+                content=''
+            )
+            
+            send_json(connection, message)
+            continue
         
+        if content.startswith('/'):
+            print('Comando desconhecido.')
+            continue
+        
+        if content.startswith('@'):
+            target, separator, text = content.partition(' ')
+            
+            if not separator or not target[1] or not text.strip():
+                print('Use: @nome_usuário mensagem')
+                continue
+            
+            recipient = target[1:]
+            text = text.strip()
+            
+        else:
+            recipient = 'all'
+            text = content
+            
         message = create_message(
-            message_type=message_type, 
-            sender=username, 
-            recipient="server", 
-            content='' if message_type == 'list_users' else content
+            message_type='message',
+            sender=username,
+            recipient=recipient,
+            content=text
         )
         
         send_json(connection, message)
+        
     
 
 def start_client():

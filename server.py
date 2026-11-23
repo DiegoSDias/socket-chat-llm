@@ -23,16 +23,25 @@ def register_client(username, display_name, connection):
         connected_clients[username_key] = {
             'username': username,
             'display_name': display_name,
-            'connection': connection
+            'connection': connection,
+            'send_lock': threading.Lock(),
+            'ready': False
         }
         
     return True
 
 
-def unregister_client(username, connection):
-    username_key = username.casefold()
-    
+def mark_client_ready(username, connection):
     with clients_lock:
+        client = connected_clients.get(username.casefold())
+        
+        if client is not None and client['connection'] is connection:
+            client['ready'] = True
+
+
+def unregister_client(username, connection): 
+    with clients_lock:
+        username_key = username.casefold()
         client_data = connected_clients.get(username_key)
         
         if client_data is not None and client_data['connection'] is connection:
@@ -50,22 +59,136 @@ def list_connected_clients():
                 'display_name': client['display_name']
             }
             for client in connected_clients.values()
+            if client['ready']
         ]
         
     return sorted(users, key=lambda user: user['username'].casefold())
 
 
-def send_error(connection, recipient, description, request_id=None):
+def send_to_client(username, message):
+    with clients_lock:
+        client = connected_clients.get(username.casefold())
+        
+        if client is None or not client['ready']:
+            return False
+        
+        connection = client['connection']
+        send_lock = client['send_lock']
+        
+    try:
+        with send_lock:
+            send_json(connection, message)
+        
+        return True
+    
+    except OSError as error:
+        print(f'Não foi possivel enviar mensagem para @{username}: {error}')
+        return False
+
+
+def send_error(connection, username, description, request_id=None):
     error_message = create_message(
         message_type = 'error',
         sender = 'server',
-        recipient = recipient,
+        recipient = username,
         content = description,
         request_id = request_id
     )
     
-    send_json(connection, error_message)
+    with clients_lock:
+        client = (
+            connected_clients.get(username.casefold())
+            if isinstance(username, str)
+            else None
+        )
     
+    is_ready = (
+        client is not None
+        and client['connection'] is connection
+        and client['ready']
+    )
+    
+    if is_ready:
+        send_to_client(username, error_message)
+    else:
+        send_json(connection, error_message)
+
+
+def handle_chat_message(connection, username, display_name, message):
+    request_id = message['request_id']
+    recipient = message['recipient']
+    content = message['content']
+    
+    if not isinstance(recipient, str) or not recipient:
+        send_error(connection, username, 'Destinatário inválido.', request_id)
+        return
+    
+    if not isinstance(content, str) or not content.strip():
+        send_error(connection, username, 'Mensagem não pode ser vazia.', request_id)
+        return
+    
+    if recipient == 'all':
+        with clients_lock:
+            recipient = [
+                client['username']
+                for key, client in connected_clients.items()
+                if key != username.casefold() and client['ready']
+            ]
+        
+        delivered = 0
+        
+        for target in recipient:
+            forwarded = create_message(
+                message_type = 'message',
+                sender = username,
+                recipient = 'all',
+                content = {
+                    'display_name': display_name,
+                    'text': content,
+                    'scope': 'public'
+                },
+                request_id = request_id
+            )
+            
+            if send_to_client(target, forwarded):
+                delivered += 1
+        
+        status = f'Mensagens públicas enviadas para {delivered} usuários.'
+        
+    else:
+        forwarded = create_message(
+            message_type = 'message',
+            sender = username,
+            recipient = recipient,
+            content = {
+                'display_name': display_name,
+                'text': content,
+                'scope': 'private'
+            },
+            request_id = request_id
+        )
+        
+        if not send_to_client(recipient, forwarded):
+            send_error(
+                connection,
+                username,
+                f'Usuário @{recipient} não está disponível',
+                request_id
+            )
+            return
+        
+        status = f'Mensagem privada enviada para @{recipient}.'
+        
+    response = create_message(
+        message_type = 'response',
+        sender = 'server',
+        recipient = username,
+        content = status,
+        request_id = request_id
+    )
+        
+    send_to_client(username, response)
+ 
 
 def handle_client(connection, address):
     username = None
@@ -89,6 +212,7 @@ def handle_client(connection, address):
                     return
                 
                 request_id = identification.get('request_id')
+                
                 if not isinstance(request_id, str) or not request_id:
                     print('ID da identificação inválido.')
                     return
@@ -148,17 +272,18 @@ def handle_client(connection, address):
                     print('Nome de usuário está em uso')
                     return
                 
-                print(f'Usuário conectado: {display_name} @{username}')
-                
                 confirmation = create_message(
                     message_type = 'confirmation',
                     sender = 'server',
                     recipient = username,
-                    content = f'Bem vindo, {display_name} @{username}!',
+                    content = f'Bem vindo, {display_name} (@{username})!',
                     request_id = request_id,
                 )
                 
                 send_json(connection, confirmation)
+                mark_client_ready(username, connection)
+                
+                print(f'Usuário conectado: {display_name} (@{username})')
                 
                 while True:
                     message = receive_json(reader)
@@ -200,26 +325,20 @@ def handle_client(connection, address):
                         continue
                     
                     if message_type != 'message':
-                        send_error(connection, username, 'Mensagem inválida', request_id)
+                        send_error(
+                            connection, 
+                            username, 
+                            'Mensagem inválida', 
+                            request_id
+                        )
                         continue
                     
-                    content = message.get('content', '')
-                    
-                    if not isinstance(content, str):
-                        send_error(connection, username, 'Conteúdo da mensagem inválido', request_id)
-                        continue
-                    
-                    print(f'{display_name} @{username}: {content}')
-                    
-                    response = create_message(
-                        message_type = 'response',
-                        sender = 'server',
-                        recipient = username,
-                        content = content.upper(),
-                        request_id = request_id
+                    handle_chat_message(
+                        connection,
+                        username,
+                        display_name,
+                        message
                     )
-                    
-                    send_json(connection, response)
                       
     except (OSError, ValueError, KeyError, AttributeError) as error:
         print(f'Erro de comunicação com {address}: {error}')
@@ -228,7 +347,8 @@ def handle_client(connection, address):
         if username is not None:
             if unregister_client(username, connection):
                 print(f'Cliente removido: @{username}')
-        
+   
+     
 def start_server():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -251,7 +371,8 @@ def start_server():
             )
 
             client_thread.start()
-            
+
+          
 if __name__ == '__main__':
     try:
         start_server()
